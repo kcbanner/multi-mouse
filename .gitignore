@@ -1,0 +1,5 @@
+zig-out/
+*.org
+*.rdbg
+*.afdesign
+*.afdesign~lock~

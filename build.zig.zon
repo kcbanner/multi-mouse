@@ -1,0 +1,15 @@
+.{
+    .name = "multimouse",
+    .version = "0.1.0",
+    .dependencies = .{
+        .known_folders = .{
+            .url = "https://github.com/ziglibs/known-folders/archive/47076c6b11214a218e9244471d8762310820911a.tar.gz",
+            .hash = "12209d2738a2e1dbd3781c2e5f01a2ea877dcfeea53efdfa1913247297d328e6b207",
+        },
+        .zigwin32 = .{
+            .url = "https://github.com/kcbanner/zigwin32/archive/49874d0c5bce4a28db649b3365af314c3bf876f9.tar.gz",
+            .hash = "122098d4c1d45686f4f40b4387ddafbc5401fd1138aba2cfc90d1f34cf3d471849a7",
+        },
+    },
+    .paths = .{""},
+}
