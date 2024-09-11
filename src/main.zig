@@ -74,6 +74,31 @@ const MouseSettings = extern struct {
     }
 };
 
+fn messageBoxFormatSystemMessage(
+    hwnd: ?win32.foundation.HWND,
+    comptime caption: []const u8,
+    message_id: u32,
+    style: wm.MESSAGEBOX_STYLE,
+) wm.MESSAGEBOX_RESULT {
+    const buf: [*:0]u16 = undefined;
+    const len = win32.system.diagnostics.debug.FormatMessageW(
+        .{
+            .ALLOCATE_BUFFER = 1,
+            .FROM_SYSTEM = 1,
+        },
+        null,
+        message_id,
+        0,
+        buf,
+        0,
+        null,
+    );
+    defer _ = win32.system.memory.LocalFree(@bitCast(@intFromPtr(buf)));
+    if (len == 0) return .OK;
+
+    return wm.MessageBoxW(hwnd, buf, W(caption), style);
+}
+
 fn messageBox(
     hwnd: ?win32.foundation.HWND,
     comptime caption: []const u8,
@@ -283,18 +308,6 @@ fn createIcon(hwnd: win32.foundation.HWND, default_icon: ?wm.HICON, color_rgba: 
     return wm.CreateIconIndirect(&icon_info);
 }
 
-const ContextMenuCommand = enum(u16) {
-    exit,
-    edit_config,
-    reload_config,
-    about,
-
-    profile_start = 0xff,
-    profile_end = 0xff + max_profiles,
-
-    _,
-};
-
 fn showContextMenu(hwnd: win32.foundation.HWND, point: win32.foundation.POINT) !void {
     if (wm.CreatePopupMenu()) |menu| {
         _ = wm.SetForegroundWindow(hwnd);
@@ -319,7 +332,7 @@ fn showContextMenu(hwnd: win32.foundation.HWND, point: win32.foundation.POINT) !
             menu,
             .{},
             @intFromEnum(ContextMenuCommand.edit_config),
-            W("Edit configuration"),
+            W("Edit configuration..."),
         );
         _ = wm.AppendMenu(
             menu,
@@ -327,13 +340,23 @@ fn showContextMenu(hwnd: win32.foundation.HWND, point: win32.foundation.POINT) !
             @intFromEnum(ContextMenuCommand.reload_config),
             W("Reload configuration"),
         );
+
         _ = wm.AppendMenu(menu, .{ .SEPARATOR = 1 }, 0, null);
+        _ = wm.AppendMenu(
+            menu,
+            .{
+                .CHECKED = @intFromBool(app.launch_on_startup),
+            },
+            @intFromEnum(ContextMenuCommand.launch_on_startup),
+            W("Launch on startup"),
+        );
         _ = wm.AppendMenu(
             menu,
             .{},
             @intFromEnum(ContextMenuCommand.about),
-            W("About"),
+            W("About..."),
         );
+
         _ = wm.AppendMenu(menu, .{ .SEPARATOR = 1 }, 0, null);
         _ = wm.AppendMenu(
             menu,
@@ -445,6 +468,9 @@ fn wndProc(
                         @bitCast(wm.SW_SHOW),
                     );
                 },
+                @intFromEnum(ContextMenuCommand.launch_on_startup) => {
+                    app.toggleLaunchOnStartup();
+                },
                 @intFromEnum(ContextMenuCommand.about) => {
                     if (app.about_dialog == null) {
                         app.about_dialog = wm.CreateDialogParam(
@@ -511,16 +537,27 @@ fn wndProc(
     return 0;
 }
 
-inline fn unexpectedError(allocator: std.mem.Allocator, err: anyerror) void {
-    _ = messageBoxFmt(
-        null,
-        allocator,
-        "Error",
-        "Unexpected error: {}",
-        .{err},
-        .{},
-    ) catch unreachable;
-    if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace.*);
+fn handleError(allocator: std.mem.Allocator, err: anyerror) void {
+    switch (err) {
+        // Functions that return this error report it themselves
+        error.InvalidConfiguration => {},
+        error.Unexpected => _ = messageBoxFormatSystemMessage(
+            null,
+            "Error",
+            @intFromEnum(windows.GetLastError()),
+            .{},
+        ),
+        else => {
+            _ = messageBoxFmt(
+                null,
+                allocator,
+                "Error",
+                "Unexpected error: {}",
+                .{err},
+                .{},
+            ) catch unreachable;
+        },
+    }
 }
 
 pub export fn wWinMain(
@@ -553,24 +590,24 @@ pub export fn wWinMain(
         if (windows.GetLastError() == .ALREADY_EXISTS) return 0;
         break :blk event;
     } else {
-        const err = windows.GetLastError();
-        unexpectedError(allocator, windows.unexpectedError(err));
+        _ = messageBoxFormatSystemMessage(
+            null,
+            "Error checking for existing process",
+            @intFromEnum(windows.GetLastError()),
+            .{},
+        );
         return 1;
     };
     defer _ = windows.CloseHandle(event);
 
     app = App.init(allocator, hInstance) catch |err| {
-        switch (err) {
-            error.InvalidConfiguration => {},
-            else => unexpectedError(allocator, err),
-        }
-
+        handleError(allocator, err);
         return 1;
     };
     defer app.deinit();
 
     app.createWindow() catch |err| {
-        unexpectedError(allocator, err);
+        handleError(allocator, err);
         return 1;
     };
 
@@ -592,6 +629,7 @@ const App = struct {
     config_path: []const u8,
     config_arena: std.heap.ArenaAllocator,
     config: Config,
+    launch_on_startup: bool,
     selected_profile: ?u8,
 
     default_icon: ?wm.HICON,
@@ -666,6 +704,18 @@ const App = struct {
             &default_icon,
         );
 
+        var path_buf: [windows.MAX_PATH]u16 = undefined;
+        var path_len: u32 = undefined;
+        const launch_on_startup = win32.system.registry.RegGetValueW(
+            win32.system.registry.HKEY_CURRENT_USER,
+            startup_reg_key,
+            startup_reg_value,
+            .{ .REG_SZ = 1 },
+            null,
+            &path_buf,
+            &path_len,
+        ) == win32.foundation.ERROR_SUCCESS;
+
         return .{
             .allocator = allocator,
             .hinstance = hinstance,
@@ -674,6 +724,7 @@ const App = struct {
             .config = config,
             .selected_profile = if (config.profiles.len > 0) 0 else null,
             .default_icon = default_icon,
+            .launch_on_startup = launch_on_startup,
         };
     }
 
@@ -717,7 +768,9 @@ const App = struct {
             null,
         );
 
-        if (self.hwnd == null) return windows.unexpectedError(windows.GetLastError());
+        if (self.hwnd == null) {
+            return windows.unexpectedError(windows.GetLastError());
+        }
 
         if (!self.ensureNotificationIcon()) {
             _ = messageBox(self.hwnd, "Error", "Error creating tray icon", .{});
@@ -865,12 +918,79 @@ const App = struct {
         nid.guidItem = guids.icon;
         _ = shell.Shell_NotifyIconW(.DELETE, &nid) != 0;
     }
+
+    fn toggleLaunchOnStartup(self: *App) void {
+        var hkey: ?win32.system.registry.HKEY = undefined;
+        if (win32.system.registry.RegOpenKeyExW(
+            win32.system.registry.HKEY_CURRENT_USER,
+            startup_reg_key,
+            0,
+            .{ .SET_VALUE = 1 },
+            &hkey,
+        ) != win32.foundation.ERROR_SUCCESS) {
+            _ = messageBoxFormatSystemMessage(
+                self.hwnd,
+                "Error opening registry key",
+                @intFromEnum(windows.GetLastError()),
+                .{},
+            );
+
+            return;
+        }
+        defer _ = win32.system.registry.RegCloseKey(hkey);
+
+        if (self.launch_on_startup) {
+            if (win32.system.registry.RegDeleteValueW(
+                hkey.?,
+                startup_reg_value,
+            ) == win32.foundation.ERROR_SUCCESS) {
+                self.launch_on_startup = false;
+            } else {
+                _ = messageBoxFormatSystemMessage(
+                    self.hwnd,
+                    "Error deleting registry value",
+                    @intFromEnum(windows.GetLastError()),
+                    .{},
+                );
+            }
+        } else {
+            var exe_path_buf: [windows.MAX_PATH + 3]u16 = undefined;
+            const exe_path_len = win32.system.library_loader.GetModuleFileNameW(
+                null,
+                @ptrCast(exe_path_buf[1..].ptr),
+                windows.MAX_PATH,
+            );
+            if (exe_path_len == 0 or exe_path_len >= windows.MAX_PATH) return;
+
+            exe_path_buf[0] = W("\"")[0];
+            exe_path_buf[exe_path_len + 1] = exe_path_buf[0];
+            exe_path_buf[exe_path_len + 2] = 0;
+            if (win32.system.registry.RegSetValueExW(
+                hkey.?,
+                startup_reg_value,
+                0,
+                .SZ,
+                @ptrCast(&exe_path_buf),
+                (exe_path_len + 3) * @sizeOf(u16),
+            ) == win32.foundation.ERROR_SUCCESS) {
+                self.launch_on_startup = true;
+            } else {
+                _ = messageBoxFormatSystemMessage(
+                    self.hwnd,
+                    "Error setting registry value",
+                    @intFromEnum(windows.GetLastError()),
+                    .{},
+                );
+            }
+        }
+    }
 };
 
 const builtin = @import("builtin");
 const std = @import("std");
 const known_folders = @import("known-folders");
 const win32 = @import("win32");
+const resource = @import("resource");
 const windows = std.os.windows;
 const W = std.unicode.utf8ToUtf16LeStringLiteral;
 const wm = win32.ui.windows_and_messaging;
@@ -879,10 +999,6 @@ const input = win32.ui.input;
 const shell = win32.ui.shell;
 const logger = std.log.scoped(.multi_mouse);
 
-const resource = @cImport({
-    @cInclude("resource.h");
-});
-
 /// zigwin32 configuration
 pub const UNICODE = true;
 
@@ -890,6 +1006,9 @@ pub const UNICODE = true;
 const Messages = enum(u32) {
     notification_callback = wm.WM_APP + 1,
 };
+
+const startup_reg_key = W("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
+const startup_reg_value = W("MultiMouse");
 
 /// Maximum number of supported profiles.
 /// THe limiting factor is space for the single-digit number in the icon.
@@ -900,6 +1019,19 @@ const HotkeyId = enum(usize) {
 
     profile_start = 2,
     profile_end = 2 + max_profiles,
+
+    _,
+};
+
+const ContextMenuCommand = enum(u16) {
+    exit,
+    edit_config,
+    reload_config,
+    launch_on_startup,
+    about,
+
+    profile_start = 0xff,
+    profile_end = 0xff + max_profiles,
 
     _,
 };

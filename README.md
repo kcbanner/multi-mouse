@@ -30,7 +30,7 @@ The configuration is stored in `%LOCALAPPDATA%\multi-mouse.json`. If this file d
 
 The definition of the configuration is as follows:
 
-```
+```zig
 const Config = struct {
     const Profile = struct {
         name: []const u8,
@@ -71,7 +71,7 @@ The tray icon has an `Edit configuration` option which will open the configurati
 
 ### Example configuration
 
-```
+```json
 {
     "profiles": [
         {
