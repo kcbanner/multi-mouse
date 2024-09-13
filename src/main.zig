@@ -613,6 +613,22 @@ pub export fn wWinMain(
 
     app.registerHotkeys();
 
+    var last_profile: u32 = undefined;
+    var last_profile_len: u32 = @sizeOf(@TypeOf(last_profile));
+    if (win32.system.registry.RegGetValueW(
+        win32.system.registry.HKEY_CURRENT_USER,
+        registry.settings_key,
+        registry.settings_profile,
+        .{ .REG_DWORD = 1 },
+        null,
+        &last_profile,
+        &last_profile_len,
+    ) != win32.foundation.ERROR_SUCCESS) {
+        last_profile = 0;
+    }
+
+    if (last_profile < app.config.profiles.len) app.activateProfile(@intCast(last_profile));
+
     var msg: wm.MSG = undefined;
     while (wm.GetMessage(&msg, null, 0, 0) != 0) {
         _ = wm.TranslateMessage(&msg);
@@ -705,11 +721,11 @@ const App = struct {
         );
 
         var path_buf: [windows.MAX_PATH]u16 = undefined;
-        var path_len: u32 = undefined;
+        var path_len: u32 = path_buf.len;
         const launch_on_startup = win32.system.registry.RegGetValueW(
             win32.system.registry.HKEY_CURRENT_USER,
-            startup_reg_key,
-            startup_reg_value,
+            registry.startup_key,
+            registry.startup_value,
             .{ .REG_SZ = 1 },
             null,
             &path_buf,
@@ -722,7 +738,7 @@ const App = struct {
             .config_path = config_path,
             .config_arena = config_arena,
             .config = config,
-            .selected_profile = if (config.profiles.len > 0) 0 else null,
+            .selected_profile = null,
             .default_icon = default_icon,
             .launch_on_startup = launch_on_startup,
         };
@@ -855,6 +871,16 @@ const App = struct {
 
         self.selected_profile = profile_index;
         _ = self.ensureNotificationIcon();
+
+        const profile_index_dword: u32 = profile_index;
+        _ = win32.system.registry.RegSetKeyValueW(
+            win32.system.registry.HKEY_CURRENT_USER,
+            registry.settings_key,
+            registry.settings_profile,
+            @intFromEnum(win32.system.registry.REG_VALUE_TYPE.DWORD),
+            @ptrCast(&profile_index_dword),
+            @sizeOf(@TypeOf(profile_index_dword)),
+        );
     }
 
     fn ensureNotificationIcon(self: *App) bool {
@@ -923,7 +949,7 @@ const App = struct {
         var hkey: ?win32.system.registry.HKEY = undefined;
         if (win32.system.registry.RegOpenKeyExW(
             win32.system.registry.HKEY_CURRENT_USER,
-            startup_reg_key,
+            registry.startup_key,
             0,
             .{ .SET_VALUE = 1 },
             &hkey,
@@ -942,7 +968,7 @@ const App = struct {
         if (self.launch_on_startup) {
             if (win32.system.registry.RegDeleteValueW(
                 hkey.?,
-                startup_reg_value,
+                registry.startup_value,
             ) == win32.foundation.ERROR_SUCCESS) {
                 self.launch_on_startup = false;
             } else {
@@ -967,7 +993,7 @@ const App = struct {
             exe_path_buf[exe_path_len + 2] = 0;
             if (win32.system.registry.RegSetValueExW(
                 hkey.?,
-                startup_reg_value,
+                registry.startup_value,
                 0,
                 .SZ,
                 @ptrCast(&exe_path_buf),
@@ -1007,11 +1033,16 @@ const Messages = enum(u32) {
     notification_callback = wm.WM_APP + 1,
 };
 
-const startup_reg_key = W("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
-const startup_reg_value = W("MultiMouse");
+const registry = struct {
+    const startup_key = W("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
+    const startup_value = W("MultiMouse");
+
+    const settings_key = W("SOFTWARE\\MultiMouse");
+    const settings_profile = W("Profile");
+};
 
 /// Maximum number of supported profiles.
-/// THe limiting factor is space for the single-digit number in the icon.
+/// The limiting factor is space for the single-digit number in the icon.
 const max_profiles = 9;
 
 const HotkeyId = enum(usize) {
